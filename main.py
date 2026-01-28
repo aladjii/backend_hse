@@ -1,32 +1,32 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from routes.ads import router as ads_router
+from model import get_or_create_model
 
-app = FastAPI(title="Ad Moderation Service")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("main")
 
-class AdItem(BaseModel):
-    seller_id: int
-    is_verified_seller: bool
-    item_id: int
-    name: str
-    description: str
-    category: int
-    images_qty: int = Field(ge=0)
-
-@app.post("/predict")
-async def predict(item: AdItem) -> bool:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting up: Loading ML model")
     try:
-        # если продавец подтвержден - True 
-        if item.is_verified_seller:
-            return True
-        
-        # если не подтвержден - True только при наличии изображений
-        if item.images_qty > 0:
-            return True
-        
-        return False
-        
+        app.state.model = get_or_create_model()
+        logger.info("ML model loaded successfully")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        logger.error(f"Failed to load model: {e}")
+        app.state.model = None
+
+    yield
+
+    logger.info("Shutting down")
+
+app = FastAPI(title="Ad Moderation ML Service", lifespan=lifespan)
+
+app.include_router(ads_router)
 
 if __name__ == "__main__":
     import uvicorn
