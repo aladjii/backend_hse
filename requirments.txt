@@ -7,5 +7,5 @@ httpx
 pytest
 asyncpg
 psycopg2-binary
-yandex-pgmigrate
 pytest-asyncio
+aiokafka

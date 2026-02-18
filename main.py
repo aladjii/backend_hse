@@ -5,6 +5,7 @@ from fastapi import FastAPI
 import asyncpg
 from routes.ads import router as ads_router
 from model import get_or_create_model
+from clients.kafka import kafka_producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +33,20 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to create DB pool: {e}")
         app.state.db_pool = None
 
+    logger.info("Starting up: starting Kafka producer")
+    try:
+        await kafka_producer.start()
+        logger.info("Kafka producer started")
+    except Exception as e:
+        logger.error(f"Failed to start Kafka producer: {e}")
+
     yield
+
+    logger.info("Shutting down: stopping Kafka producer")
+    try:
+        await kafka_producer.stop()
+    except Exception as e:
+        logger.error(f"Error stopping Kafka producer: {e}")
 
     logger.info("Shutting down: closing DB pool")
     pool = getattr(app.state, "db_pool", None)

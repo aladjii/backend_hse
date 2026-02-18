@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 from services.predictor import PredictionService
 from services import repositories
+from clients.kafka import kafka_producer
 
 router = APIRouter()
 logger = logging.getLogger("api")
@@ -22,6 +23,20 @@ class ItemId(BaseModel):
 class PredictionResponse(BaseModel):
     is_violation: bool
     probability: float
+
+class AsyncPredictRequest(BaseModel):
+    item_id: int = Field(..., gt=0)
+
+class AsyncPredictResponse(BaseModel):
+    task_id: int
+    status: str
+    message: str
+
+class ModerationStatusResponse(BaseModel):
+    task_id: int
+    status: str
+    is_violation: bool | None = None
+    probability: float | None = None
 
 def get_prediction_service(request: Request) -> PredictionService:
     model = request.app.state.model
@@ -96,3 +111,42 @@ async def simple_predict(
     except Exception as e:
         logger.error(f"Simple prediction failed for item_id={payload.item_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+@router.post("/async_predict", response_model=AsyncPredictResponse)
+async def async_predict(payload: AsyncPredictRequest, request: Request):
+    pool = getattr(request.app.state, "db_pool", None)
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB connection is not available")
+
+    ad = await repositories.get_ad_by_item_id(pool, payload.item_id)
+    if ad is None:
+        raise HTTPException(status_code=404, detail="Ad not found")
+
+    task_id = await repositories.create_moderation_result(pool, ad["id"])
+    await kafka_producer.send_moderation_request(payload.item_id)
+
+    logger.info(f"Async moderation task created: task_id={task_id}, item_id={payload.item_id}")
+    return AsyncPredictResponse(
+        task_id=task_id,
+        status="pending",
+        message="Moderation request accepted",
+    )
+
+
+@router.get("/moderation_result/{task_id}", response_model=ModerationStatusResponse)
+async def get_moderation_result(task_id: int, request: Request):
+    pool = getattr(request.app.state, "db_pool", None)
+    if pool is None:
+        raise HTTPException(status_code=500, detail="DB connection is not available")
+
+    result = await repositories.get_moderation_result(pool, task_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    return ModerationStatusResponse(
+        task_id=result["id"],
+        status=result["status"],
+        is_violation=result["is_violation"],
+        probability=result["probability"],
+    )
