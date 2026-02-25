@@ -15,6 +15,17 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:latest
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   redpanda:
     image: redpandadata/redpanda:latest
     command:
@@ -57,12 +68,15 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ads_db
       KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redpanda:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - .:/app
@@ -74,10 +88,13 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ads_db
       KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy
       redpanda:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - .:/app

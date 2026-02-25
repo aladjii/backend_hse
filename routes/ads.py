@@ -15,7 +15,7 @@ class AdItem(BaseModel):
     name: str
     description: str
     category: int
-    images_qty: int = Field(ge=0, description="Количество изображений, >= 0")
+    images_qty: int = Field(ge=0)
 
 class ItemId(BaseModel):
     item_id: int = Field(..., gt=0)
@@ -41,19 +41,19 @@ class ModerationStatusResponse(BaseModel):
 def get_prediction_service(request: Request) -> PredictionService:
     model = request.app.state.model
     if model is None:
-        logger.critical("Model not found in app state")
         raise HTTPException(status_code=503, detail="Service Unavailable: model not loaded")
     return PredictionService(model)
 
 @router.post("/predict", response_model=PredictionResponse)
 async def predict_ad_violation(
     item: AdItem,
+    request: Request,
     service: PredictionService = Depends(get_prediction_service)
 ):
-    logger.info(
-        f"Incoming prediction request: seller_id={item.seller_id}, item_id={item.item_id}, "
-        f"features=[ver={item.is_verified_seller}, img={item.images_qty}, len_desc={len(item.description)}, cat={item.category}]"
-    )
+    cache = request.app.state.cache
+    cached = await cache.get_prediction(item.item_id)
+    if cached:
+        return PredictionResponse(**cached)
 
     try:
         is_violation, probability = service.predict(
@@ -62,16 +62,12 @@ async def predict_ad_violation(
             description=item.description,
             category=item.category
         )
-
-        logger.info(f"Prediction result: item_id={item.item_id}, is_violation={is_violation}, probability={probability:.4f}")
-
-        return PredictionResponse(is_violation=is_violation, probability=probability)
-
-    except HTTPException:
-        raise
+        result = {"is_violation": is_violation, "probability": probability}
+        await cache.set_prediction(item.item_id, result)
+        return PredictionResponse(**result)
     except Exception as e:
-        logger.error(f"Prediction failed for item_id={item.item_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        logger.error(f"Prediction failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/simple_predict", response_model=PredictionResponse)
 async def simple_predict(
@@ -79,70 +75,51 @@ async def simple_predict(
     request: Request,
     service: PredictionService = Depends(get_prediction_service)
 ):
+    cache = request.app.state.cache
+    cached = await cache.get_prediction(payload.item_id)
+    if cached:
+        return PredictionResponse(**cached)
 
-    pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        logger.critical("DB pool not initialized")
-        raise HTTPException(status_code=500, detail="DB connection is not available")
-
+    pool = request.app.state.db_pool
     ad = await repositories.get_ad_by_item_id(pool, payload.item_id)
-    if ad is None:
-        logger.info(f"Ad not found: item_id={payload.item_id}")
+    if not ad:
         raise HTTPException(status_code=404, detail="Ad not found")
 
     seller = await repositories.get_user_by_id(pool, ad["seller_id"])
-    if seller is None:
-        logger.warning(f"Seller not found for ad: item_id={payload.item_id}, seller_id={ad['seller_id']}")
-        raise HTTPException(status_code=500, detail="Seller not found")
-
-    try:
-        is_violation, probability = service.predict(
-            is_verified=bool(seller.get("is_verified", False)),
-            images_qty=int(ad.get("images_qty", 0)),
-            description=str(ad.get("description", "")),
-            category=int(ad.get("category", 0))
-        )
-
-        logger.info(f"Simple prediction: item_id={payload.item_id}, is_violation={is_violation}, probability={probability:.4f}")
-
-        return PredictionResponse(is_violation=is_violation, probability=probability)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Simple prediction failed for item_id={payload.item_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
-
+    
+    is_violation, probability = service.predict(
+        is_verified=bool(seller.get("is_verified", False)),
+        images_qty=int(ad.get("images_qty", 0)),
+        description=str(ad.get("description", "")),
+        category=int(ad.get("category", 0))
+    )
+    result = {"is_violation": is_violation, "probability": probability}
+    await cache.set_prediction(payload.item_id, result)
+    return PredictionResponse(**result)
 
 @router.post("/async_predict", response_model=AsyncPredictResponse)
 async def async_predict(payload: AsyncPredictRequest, request: Request):
-    pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        raise HTTPException(status_code=500, detail="DB connection is not available")
-
+    pool = request.app.state.db_pool
     ad = await repositories.get_ad_by_item_id(pool, payload.item_id)
-    if ad is None:
+    if not ad:
         raise HTTPException(status_code=404, detail="Ad not found")
 
     task_id = await repositories.create_moderation_result(pool, ad["id"])
     await kafka_producer.send_moderation_request(payload.item_id)
-
-    logger.info(f"Async moderation task created: task_id={task_id}, item_id={payload.item_id}")
-    return AsyncPredictResponse(
-        task_id=task_id,
-        status="pending",
-        message="Moderation request accepted",
-    )
-
+    return AsyncPredictResponse(task_id=task_id, status="pending", message="Accepted")
 
 @router.get("/moderation_result/{task_id}", response_model=ModerationStatusResponse)
 async def get_moderation_result(task_id: int, request: Request):
-    pool = getattr(request.app.state, "db_pool", None)
-    if pool is None:
-        raise HTTPException(status_code=500, detail="DB connection is not available")
-
+    pool = request.app.state.db_pool
     result = await repositories.get_moderation_result(pool, task_id)
-    if result is None:
+    if not result:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    if result["status"] == "completed":
+        ad = await repositories.get_ad_by_id(pool, result["item_id"])
+        if ad:
+            cache_data = {"is_violation": result["is_violation"], "probability": result["probability"]}
+            await request.app.state.cache.set_prediction(ad["item_id"], cache_data)
 
     return ModerationStatusResponse(
         task_id=result["id"],
@@ -150,3 +127,15 @@ async def get_moderation_result(task_id: int, request: Request):
         is_violation=result["is_violation"],
         probability=result["probability"],
     )
+
+@router.post("/close")
+async def close_ad(payload: ItemId, request: Request):
+    pool = request.app.state.db_pool
+    cache = request.app.state.cache
+    
+    deleted = await repositories.delete_ad_by_item_id(pool, payload.item_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Ad not found")
+        
+    await cache.delete_prediction(payload.item_id)
+    return {"message": f"Ad {payload.item_id} closed and deleted from storage"}
