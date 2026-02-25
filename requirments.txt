@@ -10,3 +10,4 @@ psycopg2-binary
 pytest-asyncio
 aiokafka
 redis
+prometheus_client

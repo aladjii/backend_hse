@@ -1,8 +1,17 @@
 import logging
+import time
 import numpy as np
 from typing import Tuple
 
+from metrics import (
+    PREDICTIONS_TOTAL,
+    PREDICTION_DURATION,
+    PREDICTION_ERRORS_TOTAL,
+    MODEL_PREDICTION_PROBABILITY,
+)
+
 logger = logging.getLogger("service")
+
 
 class PredictionService:
     def __init__(self, model):
@@ -14,6 +23,7 @@ class PredictionService:
         [is_verified_seller, images_qty, description_length, category]
         """
         if self.model is None:
+            PREDICTION_ERRORS_TOTAL.labels(error_type="model_unavailable").inc()
             raise RuntimeError("Model is not loaded")
 
         feature_verified = 1.0 if is_verified else 0.0
@@ -28,12 +38,21 @@ class PredictionService:
             feature_category
         ]])
 
+        start_time = time.time()
         try:
             probabilities = self.model.predict_proba(features)[0]
             prob_violation = probabilities[1]
             is_violation = bool(prob_violation >= 0.5)
 
+            duration = time.time() - start_time
+            PREDICTION_DURATION.observe(duration)
+
+            result_label = "violation" if is_violation else "no_violation"
+            PREDICTIONS_TOTAL.labels(result=result_label).inc()
+            MODEL_PREDICTION_PROBABILITY.observe(float(prob_violation))
+
             return is_violation, float(prob_violation)
         except Exception as e:
             logger.error(f"Error during inference: {e}")
+            PREDICTION_ERRORS_TOTAL.labels(error_type="prediction_error").inc()
             raise e
