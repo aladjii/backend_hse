@@ -1,7 +1,6 @@
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 
-
 async def create_user(pool, username: str, is_verified: bool = False) -> int:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -30,20 +29,16 @@ async def create_ad(pool, item_id: int, seller_id: int, name: str, description: 
 async def get_ad_by_item_id(pool, item_id: int) -> Optional[Dict[str, Any]]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, item_id, seller_id, name, description, category, images_qty, created_at FROM ads WHERE item_id = $1",
+            "SELECT id, item_id, seller_id, name, description, category, images_qty, created_at, is_closed FROM ads WHERE item_id = $1",
             item_id
         )
         return dict(row) if row else None
 
-
-async def get_ad_by_id(pool, ad_id: int) -> Optional[Dict[str, Any]]:
+async def delete_ad_by_item_id(pool, item_id: int) -> bool:
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, item_id, seller_id, name, description, category, images_qty, created_at FROM ads WHERE id = $1",
-            ad_id
-        )
-        return dict(row) if row else None
-
+        async with conn.transaction():
+            res = await conn.execute("DELETE FROM ads WHERE item_id = $1", item_id)
+            return res == "DELETE 1"
 
 async def create_moderation_result(pool, item_id: int) -> int:
     async with pool.acquire() as conn:
@@ -57,7 +52,6 @@ async def create_moderation_result(pool, item_id: int) -> int:
         )
         return row["id"]
 
-
 async def get_moderation_result(pool, task_id: int) -> Optional[Dict[str, Any]]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -70,6 +64,18 @@ async def get_moderation_result(pool, task_id: int) -> Optional[Dict[str, Any]]:
         )
         return dict(row) if row else None
 
+async def get_latest_moderation_result_by_ad_id(pool, ad_id: int) -> Optional[Dict[str, Any]]:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, status, is_violation, probability 
+            FROM moderation_results 
+            WHERE item_id = $1 
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            ad_id
+        )
+        return dict(row) if row else None
 
 async def update_moderation_result_completed(
     pool, task_id: int, is_violation: bool, probability: float
@@ -89,7 +95,6 @@ async def update_moderation_result_completed(
             probability,
             datetime.now(timezone.utc),
         )
-
 
 async def update_moderation_result_failed(pool, task_id: int, error_message: str) -> None:
     async with pool.acquire() as conn:
