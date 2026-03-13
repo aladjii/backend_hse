@@ -11,6 +11,7 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 import asyncpg
 
 from routes.ads import router as ads_router
+from routes.auth import router as auth_router
 from model import get_or_create_model
 from clients.kafka import kafka_producer
 from services.cache import CacheStorage
@@ -80,6 +81,7 @@ app = FastAPI(title="Ad Moderation Service", lifespan=lifespan)
 
 app.add_middleware(PrometheusMiddleware)
 app.include_router(ads_router)
+app.include_router(auth_router)
 
 
 @app.get("/metrics", include_in_schema=False)

@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from services.predictor import PredictionService
 from services import repositories
 from clients.kafka import kafka_producer
+from services.auth_dependency import get_current_account
 
 router = APIRouter()
 logger = logging.getLogger("api")
@@ -48,6 +49,7 @@ def get_prediction_service(request: Request) -> PredictionService:
 async def predict_ad_violation(
     item: AdItem,
     request: Request,
+    account = Depends(get_current_account),
     service: PredictionService = Depends(get_prediction_service)
 ):
     cache = request.app.state.cache
@@ -73,6 +75,7 @@ async def predict_ad_violation(
 async def simple_predict(
     payload: ItemId,
     request: Request,
+    account = Depends(get_current_account),
     service: PredictionService = Depends(get_prediction_service)
 ):
     cache = request.app.state.cache
@@ -98,7 +101,11 @@ async def simple_predict(
     return PredictionResponse(**result)
 
 @router.post("/async_predict", response_model=AsyncPredictResponse)
-async def async_predict(payload: AsyncPredictRequest, request: Request):
+async def async_predict(
+    payload: AsyncPredictRequest,
+    request: Request,
+    account = Depends(get_current_account)
+):
     pool = request.app.state.db_pool
     ad = await repositories.get_ad_by_item_id(pool, payload.item_id)
     if not ad:
@@ -109,7 +116,11 @@ async def async_predict(payload: AsyncPredictRequest, request: Request):
     return AsyncPredictResponse(task_id=task_id, status="pending", message="Accepted")
 
 @router.get("/moderation_result/{task_id}", response_model=ModerationStatusResponse)
-async def get_moderation_result(task_id: int, request: Request):
+async def get_moderation_result(
+    task_id: int,
+    request: Request,
+    account = Depends(get_current_account)
+):
     pool = request.app.state.db_pool
     result = await repositories.get_moderation_result(pool, task_id)
     if not result:
@@ -129,7 +140,11 @@ async def get_moderation_result(task_id: int, request: Request):
     )
 
 @router.post("/close")
-async def close_ad(payload: ItemId, request: Request):
+async def close_ad(
+    payload: ItemId,
+    request: Request,
+    account = Depends(get_current_account)
+):
     pool = request.app.state.db_pool
     cache = request.app.state.cache
     

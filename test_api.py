@@ -3,6 +3,9 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from main import app
+from services.auth_dependency import get_current_account
+
+app.dependency_overrides[get_current_account] = lambda: {"id": 1}
 
 client = TestClient(app)
 

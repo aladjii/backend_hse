@@ -11,3 +11,5 @@ pytest-asyncio
 aiokafka
 redis
 prometheus_client
+pyjwt
+pytest-mock
