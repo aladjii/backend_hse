@@ -8,6 +8,7 @@ from prometheus_client import make_asgi_app
 
 import config
 from clients.kafka import kafka_producer
+from middleware import PrometheusMiddleware
 from model import get_or_create_model
 from routes import ads, auth
 from services.cache import CacheStorage
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Ad Moderation Service", lifespan=lifespan)
+app.add_middleware(PrometheusMiddleware)
 app.mount("/metrics", make_asgi_app())
 app.include_router(ads.router, prefix="/api/v1", tags=["ads"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])

@@ -12,18 +12,21 @@ Client → FastAPI (HTTP API) → PostgreSQL
               Redis (cache)
 
 Prometheus ← /metrics
+MLflow ← Model Registry
 ```
 
 ### Компоненты
 
 | Компонент | Назначение |
-|-----------|-----------|
+|-----------|-----------| 
 | **FastAPI** | HTTP API для CRUD объявлений и модерации |
 | **ML Model** | LogisticRegression — предсказание нарушений |
+| **MLflow** | Model Registry, переключение через `MODEL_SOURCE=mlflow` |
 | **PostgreSQL** | Хранение объявлений, пользователей, результатов модерации |
 | **Kafka** | Асинхронная очередь задач модерации |
 | **Redis** | Кэш результатов предсказаний (TTL 24ч) |
-| **Prometheus** | Метрики: latency, counters, гистограммы |
+| **Prometheus** | Метрики: HTTP latency/count, ML inference, DB queries |
+| **Grafana** | Визуализация метрик |
 | **Worker** | Kafka consumer — фоновая обработка задач модерации |
 
 ## Структура проекта
@@ -31,8 +34,9 @@ Prometheus ← /metrics
 ```
 ├── main.py                  # FastAPI app, lifespan, middleware
 ├── config.py                # Переменные окружения
-├── model.py                 # Обучение и загрузка ML-модели
-├── metrics.py               # Prometheus метрики
+├── model.py                 # ML-модель + MLflow integration
+├── metrics.py               # Prometheus метрики (HTTP, ML, DB)
+├── middleware.py             # HTTP metrics middleware
 ├── clients/
 │   └── kafka.py             # Kafka producer + DLQ
 ├── services/
@@ -51,15 +55,19 @@ Prometheus ← /metrics
 │   └── 001_init.sql         # DDL: таблицы + индексы + seed data
 ├── tests/
 │   ├── conftest.py          # Фикстуры, моки, тестовый клиент
-│   ├── test_model.py        # Тесты ML-модели
-│   ├── test_predictor.py    # Тесты inference-сервиса
-│   ├── test_auth_service.py # Тесты JWT
-│   ├── test_cache.py        # Тесты Redis-кэша
-│   ├── test_routes.py       # Интеграционные тесты API
-│   ├── test_login.py        # Тесты авторизации
-│   ├── test_worker.py       # Тесты Kafka worker
-│   └── test_metrics.py      # Тесты Prometheus метрик
-├── docker-compose.yml       # Все сервисы
+│   ├── test_model.py        # Unit: ML-модель
+│   ├── test_predictor.py    # Unit: inference-сервис
+│   ├── test_auth_service.py # Unit: JWT
+│   ├── test_cache.py        # Unit: Redis-кэш (мок)
+│   ├── test_routes.py       # Unit: API routes
+│   ├── test_login.py        # Unit: авторизация
+│   ├── test_worker.py       # Unit: Kafka worker
+│   ├── test_metrics.py      # Unit: Prometheus метрики
+│   ├── test_middleware.py   # Unit: HTTP middleware
+│   ├── test_integration_postgres.py  # Integration: PostgreSQL
+│   ├── test_integration_redis.py     # Integration: Redis
+│   └── test_integration_kafka.py     # Integration: Kafka
+├── docker-compose.yml       # Все сервисы: app, worker, postgres, redis, kafka, prometheus, grafana, mlflow
 ├── Dockerfile               # API image
 ├── Dockerfile.worker        # Worker image
 ├── prometheus.yml           # Prometheus config
@@ -74,14 +82,23 @@ Prometheus ← /metrics
 ```bash
 make up          # поднять все сервисы
 make logs        # логи
-make down        # остановить
+make down        # остановить и удалить volumes
 ```
 
-### Локально
+### Масштабирование воркеров
 
 ```bash
-pip install -r requirements.txt
-python main.py
+make scale-workers           # запуск 3 воркеров
+# или вручную:
+docker compose up -d --scale worker=5
+```
+
+### MLflow: регистрация модели
+
+```bash
+make mlflow-register         # обучить и зарегистрировать в MLflow
+# после этого можно переключить источник:
+MODEL_SOURCE=mlflow make up
 ```
 
 ## API
@@ -136,25 +153,49 @@ Body: {"item_id": 100}
 
 ```
 GET /health     → {"status": "ok"}
-GET /metrics    → Prometheus metrics
+GET /metrics    → Prometheus metrics (http_requests_total, prediction_duration_seconds, ...)
 ```
 
 ## Тесты
 
+### Unit-тесты (без инфраструктуры)
+
 ```bash
 make test
 # или
-python -m pytest tests/ -v
+pytest -m "not integration" -v
 ```
 
-Покрытие:
+### Интеграционные тесты (нужны Postgres, Redis, Kafka)
+
+```bash
+make test-integration-docker
+# или локально при запущенной инфре:
+make test-integration
+```
+
+### Все тесты
+
+```bash
+make test-all
+```
+
+### Покрытие
+
+**Unit-тесты:**
 - ML-модель: обучение, сериализация, детерминированность
 - Predictor: inference, edge cases, ошибки
 - Auth: JWT lifecycle, expired/tampered tokens
-- Cache: hit/miss/set/delete
+- Cache: hit/miss/set/delete (мок Redis)
 - API routes: все эндпоинты, валидация, 401/403/404
 - Worker: success, retry, DLQ, max retries
-- Metrics: регистрация и инкремент счётчиков
+- Metrics: все Prometheus-счётчики и гистограммы
+- Middleware: HTTP метрики
+
+**Интеграционные тесты** (`@pytest.mark.integration`):
+- PostgreSQL: CRUD users, ads, moderation_results, accounts
+- Redis: set/get/delete/TTL
+- Kafka: produce/consume сообщений, DLQ
 
 ## Переменные окружения
 
@@ -163,5 +204,18 @@ python -m pytest tests/ -v
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/moderation` |
 | `REDIS_URL` | `redis://localhost:6379/0` |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| `MODEL_SOURCE` | `local` (варианты: `local`, `mlflow`) |
+| `MLFLOW_TRACKING_URI` | `http://localhost:5001` |
+| `MLFLOW_MODEL_NAME` | `ad_moderation_model` |
+| `MLFLOW_MODEL_STAGE` | `Production` |
 | `HOST` | `0.0.0.0` |
 | `PORT` | `8000` |
+
+## Веб-интерфейсы
+
+| Сервис | URL |
+|--------|-----|
+| FastAPI Swagger | http://localhost:8000/docs |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (admin/admin) |
+| MLflow | http://localhost:5001 |

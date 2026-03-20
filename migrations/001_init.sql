@@ -3,14 +3,14 @@ CREATE TABLE IF NOT EXISTS account (
     login      VARCHAR(255) UNIQUE NOT NULL,
     password   VARCHAR(255) NOT NULL,
     is_blocked BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS users (
     id          SERIAL PRIMARY KEY,
     username    VARCHAR(255) NOT NULL,
     is_verified BOOLEAN DEFAULT FALSE,
-    created_at  TIMESTAMP DEFAULT NOW()
+    created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS ads (
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS ads (
     category    INTEGER DEFAULT 0,
     images_qty  INTEGER DEFAULT 0,
     is_closed   BOOLEAN DEFAULT FALSE,
-    created_at  TIMESTAMP DEFAULT NOW()
+    created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS moderation_results (
@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS moderation_results (
     is_violation  BOOLEAN,
     probability   DOUBLE PRECISION,
     error_message TEXT,
-    created_at    TIMESTAMP DEFAULT NOW(),
-    processed_at  TIMESTAMP
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    processed_at  TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_ads_item_id ON ads(item_id);
