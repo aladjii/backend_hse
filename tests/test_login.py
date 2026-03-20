@@ -1,20 +1,41 @@
-def test_login_success(client, mocker):
+from unittest.mock import AsyncMock
 
-    mock_repo = mocker.patch(
-        "routes.auth.get_account_by_login_password"
-    )
+import pytest
 
-    mock_repo.return_value = {
-        "id": 1,
-        "login": "test",
-        "password": "123",
-        "is_blocked": False
-    }
 
-    res = client.post("/login", json={
-        "login": "test",
-        "password": "123"
-    })
+class TestLoginRoute:
+    @pytest.mark.asyncio
+    async def test_login_success(self, client):
+        pool = client._transport.app.state.db_pool
+        conn = pool.acquire().__aenter__.return_value
+        conn.fetchrow = AsyncMock(return_value={
+            "id": 1, "login": "admin", "password": "admin", "is_blocked": False
+        })
+        resp = await client.post("/api/v1/login", json={
+            "login": "admin", "password": "admin"
+        })
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "ok"
+        assert "access_token" in resp.cookies
 
-    assert res.status_code == 200
-    assert "access_token" in res.cookies
+    @pytest.mark.asyncio
+    async def test_login_invalid_credentials(self, client):
+        pool = client._transport.app.state.db_pool
+        conn = pool.acquire().__aenter__.return_value
+        conn.fetchrow = AsyncMock(return_value=None)
+        resp = await client.post("/api/v1/login", json={
+            "login": "wrong", "password": "wrong"
+        })
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_login_blocked_account(self, client):
+        pool = client._transport.app.state.db_pool
+        conn = pool.acquire().__aenter__.return_value
+        conn.fetchrow = AsyncMock(return_value={
+            "id": 2, "login": "blocked", "password": "pass", "is_blocked": True
+        })
+        resp = await client.post("/api/v1/login", json={
+            "login": "blocked", "password": "pass"
+        })
+        assert resp.status_code == 403

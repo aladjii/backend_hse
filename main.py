@@ -1,89 +1,63 @@
 import logging
-import os
-import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 import asyncpg
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from prometheus_client import make_asgi_app
 
-from routes.ads import router as ads_router
-from routes.auth import router as auth_router
-from model import get_or_create_model
+import config
 from clients.kafka import kafka_producer
+from model import get_or_create_model
+from routes import ads, auth
 from services.cache import CacheStorage
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("main")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logger = logging.getLogger("app")
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-# ---------------------------------------------------------------------------
-# HTTP метрики
-# ---------------------------------------------------------------------------
-
-REQUEST_COUNT = Counter(
-    "http_requests_total",
-    "Total HTTP requests",
-    ["method", "endpoint", "status"]
-)
-
-REQUEST_DURATION = Histogram(
-    "http_request_duration_seconds",
-    "HTTP request duration in seconds",
-    ["method", "endpoint"],
-    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
-)
-
-
-class PrometheusMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        method = request.method
-        endpoint = request.url.path
-        start_time = time.time()
-
-        response = await call_next(request)
-
-        duration = time.time() - start_time
-        REQUEST_COUNT.labels(method=method, endpoint=endpoint, status=response.status_code).inc()
-        REQUEST_DURATION.labels(method=method, endpoint=endpoint).observe(duration)
-
-        return response
-
-
-# ---------------------------------------------------------------------------
-# Lifespan
-# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Starting up...")
+    app.state.db_pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=2, max_size=10)
+    app.state.cache = CacheStorage(config.REDIS_URL)
     app.state.model = get_or_create_model()
-    app.state.db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
-    app.state.cache = CacheStorage(REDIS_URL)
-    await kafka_producer.start()
 
+    try:
+        await kafka_producer.start()
+        app.state.kafka_started = True
+    except Exception as e:
+        logger.warning("Kafka unavailable: %s", e)
+        app.state.kafka_started = False
+
+    logger.info("Startup complete")
     yield
 
-    await kafka_producer.stop()
-    await app.state.db_pool.close()
+    logger.info("Shutting down...")
+    if app.state.kafka_started:
+        await kafka_producer.stop()
     await app.state.cache.close()
+    await app.state.db_pool.close()
+    logger.info("Shutdown complete")
 
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
 
 app = FastAPI(title="Ad Moderation Service", lifespan=lifespan)
+app.mount("/metrics", make_asgi_app())
+app.include_router(ads.router, prefix="/api/v1", tags=["ads"])
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 
-app.add_middleware(PrometheusMiddleware)
-app.include_router(ads_router)
-app.include_router(auth_router)
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled error: %s", exc, exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
-@app.get("/metrics", include_in_schema=False)
-async def metrics():
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=True)

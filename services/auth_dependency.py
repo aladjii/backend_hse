@@ -1,14 +1,13 @@
-from fastapi import Depends, HTTPException, Request
-from services.auth_service import AuthService
+from fastapi import HTTPException, Request
+
 from services.account_repository import get_account_by_id
+from services.auth_service import AuthService
 
 auth_service = AuthService()
 
 
 async def get_current_account(request: Request):
-
     token = request.cookies.get("access_token")
-
     if not token:
         raise HTTPException(status_code=401, detail="Not authorized")
 
@@ -16,10 +15,8 @@ async def get_current_account(request: Request):
 
     pool = request.app.state.db_pool
     account = await get_account_by_id(pool, account_id)
-
     if not account:
         raise HTTPException(status_code=401, detail="Account not found")
-
     if account["is_blocked"]:
         raise HTTPException(status_code=403, detail="Account blocked")
 

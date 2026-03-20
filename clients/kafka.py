@@ -16,7 +16,7 @@ class KafkaProducerClient:
     def __init__(self):
         self._producer: AIOKafkaProducer | None = None
 
-    async def start(self):
+    async def start(self) -> None:
         self._producer = AIOKafkaProducer(
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -24,8 +24,8 @@ class KafkaProducerClient:
         await self._producer.start()
         logger.info("Kafka producer started")
 
-    async def stop(self):
-        if self._producer is not None:
+    async def stop(self) -> None:
+        if self._producer:
             await self._producer.stop()
             logger.info("Kafka producer stopped")
 
@@ -35,9 +35,11 @@ class KafkaProducerClient:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await self._producer.send_and_wait(MODERATION_TOPIC, message)
-        logger.info(f"Sent moderation request for item_id={item_id}")
+        logger.info("Sent moderation request for item_id=%d", item_id)
 
-    async def send_to_dlq(self, original_message: dict, error: str, retry_count: int = 1) -> None:
+    async def send_to_dlq(
+        self, original_message: dict, error: str, retry_count: int = 1
+    ) -> None:
         dlq_message = {
             "original_message": original_message,
             "error": error,
@@ -45,7 +47,11 @@ class KafkaProducerClient:
             "retry_count": retry_count,
         }
         await self._producer.send_and_wait(DLQ_TOPIC, dlq_message)
-        logger.info(f"Sent message to DLQ: item_id={original_message.get('item_id')}, error={error}")
+        logger.info(
+            "Sent message to DLQ: item_id=%s, error=%s",
+            original_message.get("item_id"),
+            error,
+        )
 
 
 kafka_producer = KafkaProducerClient()

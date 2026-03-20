@@ -1,20 +1,19 @@
+from datetime import datetime, timedelta, timezone
+
 import jwt
-from datetime import datetime, timedelta
 from fastapi import HTTPException
 
 SECRET_KEY = "secret"
 ALGORITHM = "HS256"
-TOKEN_TTL = 24
+TOKEN_TTL_HOURS = 24
 
 
 class AuthService:
-
     def create_token(self, account_id: int) -> str:
         payload = {
-            "sub": str(account_id),   # ← ВАЖНО
-            "exp": datetime.utcnow() + timedelta(hours=24)
+            "sub": str(account_id),
+            "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS),
         }
-
         return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
     def verify_token(self, token: str) -> int:

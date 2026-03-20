@@ -1,22 +1,36 @@
-.PHONY: up down migrate worker test
-
-## Start all services (PostgreSQL, Redpanda, Console, API, Worker)
 up:
-	docker compose up -d --build
+	docker compose up --build -d
 
-## Stop all services
 down:
 	docker compose down
 
-## Apply database migrations via psql inside the postgres container
+logs:
+	docker compose logs -f
+
+restart:
+	docker compose restart app worker
+
 migrate:
-	docker compose exec postgres psql -U postgres -d ads_db -f /dev/stdin < migrations/0001_create_tables.sql
-	docker compose exec postgres psql -U postgres -d ads_db -f /dev/stdin < migrations/0002_create_moderation_results.sql
+	docker compose exec postgres psql -U postgres -d moderation -f /docker-entrypoint-initdb.d/001_init.sql
 
-## Run the moderation worker locally (requires KAFKA_BOOTSTRAP_SERVERS and DATABASE_URL)
-worker:
-	python -m workers.moderation_worker
+# --- tests -----------------------------------------------------------
 
-## Run unit tests
 test:
-	pytest test_api.py -v
+	python -m pytest tests/ -v
+
+test-docker:
+	docker compose build app
+	docker compose run --rm --no-deps app python -m pytest tests/ -v
+
+test-docker-full:
+	docker compose up -d postgres redis kafka zookeeper
+	docker compose run --rm app python -m pytest tests/ -v
+	docker compose down
+
+# --- lint ------------------------------------------------------------
+
+lint:
+	ruff check . --fix
+	ruff format .
+
+.PHONY: up down logs restart migrate test test-docker test-docker-full lint
